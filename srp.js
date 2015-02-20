@@ -7,6 +7,17 @@ var BigInteger = require("./biginteger.js"),
 
 module.exports = (function () {
 
+        Session = function (sessionKey, id, idName, requester, environment, type, authIteration)
+        {
+                this.sessionKey = sessionKey;
+                this.id = id;
+                this.idName = idName;
+                this.requester = requester;
+                this.environment = environment;
+                this.type = type;
+                this.authIteration = authIteration;
+        }
+
         /*
          * Construct an SRP object with a username,
          * password, and the bits identifying the 
@@ -49,27 +60,71 @@ module.exports = (function () {
          * to the SRP protocol 6A (see RFC5054).
          */
         SRPClient.prototype = {
-                setAuthURI1: function (uri1)
+                setAuthRequester: function(requester)
                 {
-                        this.uri1 = uri1;
+                        this.requester = requester || 'c';
+                        if (this.requester == 'c')
+                        {
+                                this.idName = 'user_id';
+                        }
+                        else if (this.requester == 'a')
+                        {
+                                this.idName = 'admin_id';
+                        }
                 },
-                SetAuthURI2: function (uri2)
+                setAuthEnvironment: function (environment)
                 {
-                        this.uri2 = uri2;
+                        this.environment = environment || 'base';
+                },
+                setAuthType: function (type)
+                {
+                        this.type = type || 'email';
+                },
+                setAuthURI1: function (controller)
+                {
+                        if (controller && this.requester && this.environment && this.type && this.username)
+                        {
+                                this.uri1 = "/" + this.requester + "/" + this.environment + "/" + controller + "/" + this.type + "/" + this.username;
+                        }
+                        else
+                        {
+                                throw 'Missing settings';
+                        }
+                },
+                SetAuthURI2: function (controller)
+                {
+                        if (controller && this.requester && this.environment && this.type && this.username)
+                        {
+                                this.uri2 = "/" + this.requester + "/" + this.environment + "/" + controller + "/" + this.type + "/" + this.username;
+                        }
+                        else
+                        {
+                                throw 'Missing settings';
+                        }
                 },
                 setAuthHostname: function (hostname)
                 {
-                        this.hostname = hostname;
+                        this.hostname = hostname || 'localhost';
                 },
-                start: function ()
+                start: function (controller)
                 {
-
+                        
+                        if (!controller)
+                        {
+                                controller = 'authenticate';
+                        }
+                        
+                        if (!this.uri1)
+                        {
+                                this.setAuthURI1(controller);
+                        }
+                        
                         var deferred = q.defer();
                         var a = this.srpRandom();
                         var A = this.calculateA(a);
                         var _response1 = '';
 
-                        console.log("------------------------- STARTING -------------------------");
+                        console.log("------------------------- REQUEST 1 ----------------------------");
 
                         var postData = "A=" + A.toString(16);
 
@@ -83,17 +138,21 @@ module.exports = (function () {
                                         'Content-Length': postData.length
                                 }
                         };
+                        
                         var self = this;
                         var req = http.request(options, function (res) {
-                                console.log('STATUS CODE: ' + res.statusCode);
+                                
+                                if (res.statusCode != '201')
+                                {
+                                        deferred.reject();
+                                        return false;
+                                }
+                                
                                 //console.log('HEADERS: ' + JSON.stringify(res.headers));
                                 res.setEncoding('utf8');
                                 res.on('data', function (chunk) {
                                         
                                         _response1 = greatjson.parse(chunk);
-                                        //console.log(_response1);
-                                        //console.log(_response1['body'].srp.salt2);
-                                        console.log('GOT RESPONSE 1');
                                         self.setPasswordHash(_response1['body'].srp.salt2);
                                         var salt = _response1['body'].srp.salt;
                                         self.calculateX(salt);
@@ -103,14 +162,14 @@ module.exports = (function () {
                                         var Sc = self.calculateS(B, salt, u, a);
                                         self.sessionKey = Sc;
                                         self.clientProof = self.calculateM_c(salt, A, B, Sc);
-                                        console.log('RESOLVING');
+                                        
+                                        console.log('Success');
                                         deferred.resolve();
                                         return true;
                                         
                                 });
                         });
                         
-                        console.log(_response1);
                         req.on('error', function (e) {
                                 console.log('problem with request: ' + e.message);
                                 deferred.reject();
@@ -123,14 +182,21 @@ module.exports = (function () {
                         return deferred.promise;
 
                 },
-                finish: function ()
+                finish: function (controller)
                 {
+                        
+                        if (!controller)
+                        {
+                                controller = 'session';
+                        }
+                        
+                        if (!this.uri2)
+                        {
+                                this.SetAuthURI2(controller);
+                        }
+                        
                         var deferred = q.defer();
-                        console.log("------------------------- FINISHING -------------------------");
-                        console.log('SESSIONKEY:');
-                        console.log(this.sessionKey);
-                        console.log('PROOF:');
-                        console.log(this.clientProof);
+                        console.log("------------------------- REQUEST 2 ----------------------------");
                         var _response2 = '';
                         var postData = "proof=" + this.clientProof;
 
@@ -145,20 +211,30 @@ module.exports = (function () {
                                 }
                         };
                         
+                        var self = this;
                         var req2 = http.request(options2, function (res) {
-                                console.log('STATUS: ' + res.statusCode);
-                                console.log('HEADERS: ' + JSON.stringify(res.headers));
+                                
+                                if (res.statusCode != '201')
+                                {
+                                        deferred.reject();
+                                        return false;
+                                }
+                                
+                                //console.log('HEADERS: ' + JSON.stringify(res.headers));
                                 res.setEncoding('utf8');
                                 res.on('data', function (chunk) {
-                                        console.log('GOT RESPONSE 1');
+                                        
                                         _response2 = greatjson.parse(chunk);
-                                        console.log(_response2);
-                                        deferred.resolve(_response2);
+                                        console.log('Success');
+                                        console.log('SESSION KEY:');
+                                        console.log(self.sessionKey);
+                                        
+                                        var session = new Session(self.sessionKey, _response2['body'][self.idName], self.idName, self.requester, self.environment, self.type, 1);
+                                        deferred.resolve(session);
                                         return true;
                                         
                                 });
                         });
-                        console.log('IN FINISH');
                         
                         req2.on('error', function (e) {
                                 console.log('problem with request: ' + e.message);
